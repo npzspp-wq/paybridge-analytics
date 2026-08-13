@@ -1,0 +1,29 @@
+{
+	"name": "paybridge-analytics",
+	"main": "src/worker.js",
+	"workers_dev": true,
+	"preview_urls": false,
+	"compatibility_date": "2026-08-13",
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": false,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
+	},
+	"d1_databases": [
+		{
+			"binding": "paybridge_analytics_db",
+			"database_name": "paybridge-analytics-db",
+			"database_id": "7f3882e9-da7d-4ea4-a263-6cd59cc65bbb"
+		}
+	]
+}
