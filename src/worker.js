@@ -3,6 +3,8 @@ const JSON_HEADERS = {
   "Cache-Control": "no-store"
 };
 
+const WISE_BASE_URL = "https://api.wise-sandbox.com";
+
 function corsHeaders(request) {
   const origin = request.headers.get("Origin") || "*";
   return {
@@ -31,6 +33,69 @@ function normalizeAmount(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function correlationId() {
+  return crypto.randomUUID();
+}
+
+async function wiseFetch(env, path, options = {}) {
+  if (!env.WISE_API_TOKEN) {
+    throw new Error("WISE_API_TOKEN_MISSING");
+  }
+
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", `Bearer ${env.WISE_API_TOKEN}`);
+  headers.set("X-External-Correlation-Id", correlationId());
+  if (options.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  return fetch(`${WISE_BASE_URL}${path}`, {
+    ...options,
+    headers
+  });
+}
+
+async function getWiseBusinessProfile(env) {
+  const response = await wiseFetch(env, "/v2/profiles");
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const error = new Error("WISE_PROFILES_FAILED");
+    error.status = response.status;
+    error.details = data;
+    throw error;
+  }
+
+  const profiles = Array.isArray(data) ? data : [];
+  return (
+    profiles.find((profile) => String(profile?.type || "").toLowerCase() === "business") ||
+    profiles.find((profile) => profile?.details?.name || profile?.details?.businessName) ||
+    profiles[0] ||
+    null
+  );
+}
+
+function selectWisePaymentOption(quote) {
+  const options = Array.isArray(quote?.paymentOptions) ? quote.paymentOptions : [];
+  return (
+    options.find((item) => !item?.disabled && item?.payIn === "BANK_TRANSFER") ||
+    options.find((item) => !item?.disabled) ||
+    options[0] ||
+    null
+  );
+}
+
+function wiseFeeAmount(option) {
+  const total = option?.fee?.total;
+  if (typeof total === "number") return total;
+  if (total && typeof total === "object" && Number.isFinite(Number(total.amount))) {
+    return Number(total.amount);
+  }
+  const priceTotal = option?.price?.total?.value?.amount;
+  if (Number.isFinite(Number(priceTotal))) return Number(priceTotal);
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -47,8 +112,111 @@ export default {
         ok: true,
         service: "PAYBRIDGE Analytics",
         status: "running",
-        storage: "d1"
+        storage: "d1",
+        wiseSandbox: Boolean(env.WISE_API_TOKEN)
       });
+    }
+
+    if (request.method === "GET" && url.pathname === "/wise/status") {
+      try {
+        const profile = await getWiseBusinessProfile(env);
+        if (!profile) {
+          return json(request, { ok: false, provider: "wise", error: "no_profile" }, 404);
+        }
+
+        return json(request, {
+          ok: true,
+          provider: "wise",
+          environment: "sandbox",
+          connected: true,
+          profileId: profile.id,
+          profileType: profile.type || null,
+          profileName: profile.details?.name || profile.details?.businessName || null
+        });
+      } catch (error) {
+        console.error("WISE_STATUS_FAILED", error);
+        return json(request, {
+          ok: false,
+          provider: "wise",
+          environment: "sandbox",
+          error: error.message || "wise_status_failed",
+          upstreamStatus: error.status || null
+        }, error.status || 502);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/wise/quote") {
+      try {
+        const body = await request.json();
+        const sourceCurrency = cleanText(body.sourceCurrency || body.source, 3).toUpperCase();
+        const targetCurrency = cleanText(body.targetCurrency || body.target, 3).toUpperCase();
+        const sourceAmount = normalizeAmount(body.sourceAmount ?? body.amount);
+
+        if (!/^[A-Z]{3}$/.test(sourceCurrency) || !/^[A-Z]{3}$/.test(targetCurrency)) {
+          return json(request, { ok: false, error: "invalid_currency" }, 400);
+        }
+        if (!sourceAmount || sourceAmount <= 0) {
+          return json(request, { ok: false, error: "invalid_amount" }, 400);
+        }
+
+        const profile = await getWiseBusinessProfile(env);
+        if (!profile?.id) {
+          return json(request, { ok: false, error: "wise_profile_not_found" }, 502);
+        }
+
+        const response = await wiseFetch(env, `/v3/profiles/${profile.id}/quotes`, {
+          method: "POST",
+          body: JSON.stringify({
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount,
+            targetAmount: null,
+            targetAccount: null
+          })
+        });
+
+        const quote = await response.json().catch(() => null);
+        if (!response.ok) {
+          console.error("WISE_QUOTE_UPSTREAM_FAILED", response.status, quote);
+          return json(request, {
+            ok: false,
+            provider: "wise",
+            error: "wise_quote_failed",
+            upstreamStatus: response.status,
+            details: quote?.errors || quote || null
+          }, response.status >= 400 && response.status < 500 ? response.status : 502);
+        }
+
+        const option = selectWisePaymentOption(quote);
+        return json(request, {
+          ok: true,
+          provider: "wise",
+          environment: "sandbox",
+          quoteId: quote.id || null,
+          sourceCurrency: quote.sourceCurrency || sourceCurrency,
+          targetCurrency: quote.targetCurrency || targetCurrency,
+          sourceAmount: quote.sourceAmount ?? sourceAmount,
+          targetAmount: option?.targetAmount ?? quote.targetAmount ?? null,
+          rate: quote.rate ?? null,
+          fee: wiseFeeAmount(option),
+          feePercentage: option?.feePercentage ?? null,
+          payIn: option?.payIn ?? quote.preferredPayIn ?? null,
+          payOut: option?.payOut ?? quote.payOut ?? null,
+          estimatedDelivery: option?.estimatedDelivery ?? null,
+          formattedEstimatedDelivery: option?.formattedEstimatedDelivery ?? null,
+          rateExpirationTime: quote.rateExpirationTime ?? null,
+          expirationTime: quote.expirationTime ?? null,
+          status: quote.status ?? null
+        });
+      } catch (error) {
+        console.error("WISE_QUOTE_FAILED", error);
+        return json(request, {
+          ok: false,
+          provider: "wise",
+          error: error.message || "wise_quote_failed",
+          upstreamStatus: error.status || null
+        }, error.status || 502);
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/event") {
