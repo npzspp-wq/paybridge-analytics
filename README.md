@@ -42,3 +42,4 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ```
+Cloudflare automatic deployment enabled.
