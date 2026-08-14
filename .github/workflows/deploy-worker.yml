@@ -30,9 +30,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Normalize Cloudflare token
+        id: cf_token
+        shell: bash
+        env:
+          RAW_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          token="$RAW_CF_TOKEN"
+          token="${token#Bearer }"
+          token="$(printf '%s' "$token" | tr -d '\r\n' | xargs)"
+          echo "::add-mask::$token"
+          printf 'token=%s\n' "$token" >> "$GITHUB_OUTPUT"
+
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken: ${{ steps.cf_token.outputs.token }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
