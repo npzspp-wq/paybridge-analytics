@@ -9,6 +9,7 @@ function corsHeaders(request) {
 function json(request, payload, status = 200) { return new Response(JSON.stringify(payload), { status, headers: corsHeaders(request) }); }
 function cleanText(value, maxLength) { return String(value ?? "").trim().slice(0, maxLength); }
 function normalizeAmount(value) { if (value === null || value === undefined || value === "") return null; const n = Number(value); return Number.isFinite(n) ? n : null; }
+function validCurrency(value) { return /^[A-Z]{3}$/.test(value); }
 function correlationId() { return crypto.randomUUID(); }
 
 async function wiseFetch(env, path, options = {}) {
@@ -68,6 +69,37 @@ async function getAirwallexBalances(env) {
   if (!response.ok) { const e = new Error("AIRWALLEX_BALANCES_FAILED"); e.status=response.status; e.details=data; throw e; }
   return data;
 }
+async function createAirwallexQuote(env, sourceCurrency, targetCurrency, sourceAmount) {
+  const response = await airwallexFetch(env, "/api/v1/fx/quotes/create", {
+    method: "POST",
+    body: JSON.stringify({
+      sell_currency: sourceCurrency,
+      buy_currency: targetCurrency,
+      sell_amount: sourceAmount,
+      validity: "MIN_15"
+    })
+  });
+  const quote = await response.json().catch(() => null);
+  if (!response.ok) { const e = new Error("AIRWALLEX_QUOTE_FAILED"); e.status=response.status; e.details=quote; throw e; }
+  return {
+    ok: true,
+    provider: "airwallex",
+    environment: "sandbox",
+    quoteId: quote?.quote_id || null,
+    sourceCurrency: quote?.sell_currency || sourceCurrency,
+    targetCurrency: quote?.buy_currency || targetCurrency,
+    sourceAmount: Number(quote?.sell_amount ?? sourceAmount),
+    targetAmount: Number.isFinite(Number(quote?.buy_amount)) ? Number(quote.buy_amount) : null,
+    rate: Number.isFinite(Number(quote?.client_rate)) ? Number(quote.client_rate) : (Number.isFinite(Number(quote?.awx_rate)) ? Number(quote.awx_rate) : null),
+    midRate: Number.isFinite(Number(quote?.mid_rate)) ? Number(quote.mid_rate) : null,
+    fee: null,
+    feeIncludedInRate: true,
+    validFrom: quote?.valid_from_at || null,
+    validTo: quote?.valid_to_at || null,
+    validity: quote?.validity || null,
+    status: "CREATED"
+  };
+}
 
 export default { async fetch(request, env) {
   if (request.method === "OPTIONS") return new Response(null, { status:204, headers:corsHeaders(request) });
@@ -84,17 +116,44 @@ export default { async fetch(request, env) {
       return json(request, { ok:false, provider:"airwallex", environment:"sandbox", connected:false, error:error.message||"airwallex_status_failed", upstreamStatus:error.status||null, details:error.details||null }, error.status && error.status >= 400 && error.status < 600 ? error.status : 502);
     }
   }
+  if (request.method === "GET" && url.pathname === "/airwallex/quote-test") {
+    try {
+      const sourceCurrency=cleanText(url.searchParams.get("source")||"EUR",3).toUpperCase();
+      const targetCurrency=cleanText(url.searchParams.get("target")||"GBP",3).toUpperCase();
+      const sourceAmount=normalizeAmount(url.searchParams.get("amount")||1000);
+      if(!validCurrency(sourceCurrency)||!validCurrency(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400);
+      if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400);
+      return json(request,await createAirwallexQuote(env,sourceCurrency,targetCurrency,sourceAmount));
+    } catch(error) {
+      console.error("AIRWALLEX_QUOTE_TEST_FAILED",error);
+      return json(request,{ok:false,provider:"airwallex",environment:"sandbox",error:error.message||"airwallex_quote_test_failed",upstreamStatus:error.status||null,details:error.details||null},error.status&&error.status>=400&&error.status<600?error.status:502);
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/airwallex/quote") {
+    try {
+      const body=await request.json();
+      const sourceCurrency=cleanText(body.sourceCurrency||body.source,3).toUpperCase();
+      const targetCurrency=cleanText(body.targetCurrency||body.target,3).toUpperCase();
+      const sourceAmount=normalizeAmount(body.sourceAmount??body.amount);
+      if(!validCurrency(sourceCurrency)||!validCurrency(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400);
+      if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400);
+      return json(request,await createAirwallexQuote(env,sourceCurrency,targetCurrency,sourceAmount));
+    } catch(error) {
+      console.error("AIRWALLEX_QUOTE_FAILED",error);
+      return json(request,{ok:false,provider:"airwallex",environment:"sandbox",error:error.message||"airwallex_quote_failed",upstreamStatus:error.status||null,details:error.details||null},error.status&&error.status>=400&&error.status<600?error.status:502);
+    }
+  }
 
   if (request.method === "GET" && url.pathname === "/wise/status") {
     try { const profile=await getWiseBusinessProfile(env); if(!profile) return json(request,{ok:false,provider:"wise",error:"no_profile"},404); return json(request,{ok:true,provider:"wise",environment:"sandbox",connected:true,profileId:profile.id,profileType:profile.type||null,profileName:profile.details?.name||profile.details?.businessName||null}); }
     catch(error){ console.error("WISE_STATUS_FAILED",error); return json(request,{ok:false,provider:"wise",environment:"sandbox",error:error.message||"wise_status_failed",upstreamStatus:error.status||null},error.status||502); }
   }
   if (request.method === "GET" && url.pathname === "/wise/quote-test") {
-    try { const sourceCurrency=cleanText(url.searchParams.get("source")||"EUR",3).toUpperCase(); const targetCurrency=cleanText(url.searchParams.get("target")||"GBP",3).toUpperCase(); const sourceAmount=normalizeAmount(url.searchParams.get("amount")||1000); if(!/^[A-Z]{3}$/.test(sourceCurrency)||!/^[A-Z]{3}$/.test(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400); if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400); return json(request,await createWiseQuote(env,sourceCurrency,targetCurrency,sourceAmount)); }
+    try { const sourceCurrency=cleanText(url.searchParams.get("source")||"EUR",3).toUpperCase(); const targetCurrency=cleanText(url.searchParams.get("target")||"GBP",3).toUpperCase(); const sourceAmount=normalizeAmount(url.searchParams.get("amount")||1000); if(!validCurrency(sourceCurrency)||!validCurrency(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400); if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400); return json(request,await createWiseQuote(env,sourceCurrency,targetCurrency,sourceAmount)); }
     catch(error){ return json(request,{ok:false,provider:"wise",environment:"sandbox",error:error.message||"wise_quote_test_failed",upstreamStatus:error.status||null,details:error.details||null},error.status&&error.status>=400&&error.status<600?error.status:502); }
   }
   if (request.method === "POST" && url.pathname === "/wise/quote") {
-    try { const body=await request.json(); const sourceCurrency=cleanText(body.sourceCurrency||body.source,3).toUpperCase(); const targetCurrency=cleanText(body.targetCurrency||body.target,3).toUpperCase(); const sourceAmount=normalizeAmount(body.sourceAmount??body.amount); if(!/^[A-Z]{3}$/.test(sourceCurrency)||!/^[A-Z]{3}$/.test(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400); if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400); return json(request,await createWiseQuote(env,sourceCurrency,targetCurrency,sourceAmount)); }
+    try { const body=await request.json(); const sourceCurrency=cleanText(body.sourceCurrency||body.source,3).toUpperCase(); const targetCurrency=cleanText(body.targetCurrency||body.target,3).toUpperCase(); const sourceAmount=normalizeAmount(body.sourceAmount??body.amount); if(!validCurrency(sourceCurrency)||!validCurrency(targetCurrency)) return json(request,{ok:false,error:"invalid_currency"},400); if(!sourceAmount||sourceAmount<=0) return json(request,{ok:false,error:"invalid_amount"},400); return json(request,await createWiseQuote(env,sourceCurrency,targetCurrency,sourceAmount)); }
     catch(error){ return json(request,{ok:false,provider:"wise",error:error.message||"wise_quote_failed",upstreamStatus:error.status||null,details:error.details||null},error.status&&error.status>=400&&error.status<600?error.status:502); }
   }
   if (request.method === "POST" && url.pathname === "/event") {
