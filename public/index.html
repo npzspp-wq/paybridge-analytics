@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>PAYBRIDGE — Compare payment routes</title>
+<style>
+:root{--blue:#2667e8;--ink:#101828;--muted:#667085;--line:#dbe4f0;--bg:#f7f9fc;--green:#087a5b;--warn:#8a5b10}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+.wrap{max-width:1100px;margin:auto;padding:22px 16px 60px}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.brand{font-size:26px;font-weight:900;color:var(--blue)}.pill{font-size:12px;font-weight:800;padding:8px 12px;border:1px solid #b8d9cd;border-radius:999px;background:#effbf7;color:var(--green)}
+.hero{background:linear-gradient(135deg,#fff,#edf4ff);border:1px solid var(--line);border-radius:24px;padding:28px}.hero h1{margin:0 0 8px;font-size:clamp(32px,5vw,54px);line-height:1.02}.hero p{margin:0;color:var(--muted);font-size:17px}
+.form{margin-top:20px;display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:12px}.field label{display:block;font-size:11px;font-weight:800;color:var(--muted);margin:0 0 6px 4px}.control{width:100%;height:52px;border:1px solid #cbd6e6;border-radius:13px;background:#fff;padding:0 14px;font-size:16px}.btn{height:52px;padding:0 24px;border:0;border-radius:13px;background:var(--blue);color:white;font-weight:900;font-size:15px}.btn:disabled{opacity:.55}
+.status{margin:16px 0 0;font-size:13px;color:var(--muted)}.results{margin-top:24px}.summary{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:14px}.summary h2{margin:0;font-size:28px}.route{background:#eef4ff;border-radius:12px;padding:10px 12px;font-weight:800;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:20px;box-shadow:0 8px 30px #19335a0d}.card.best{border:2px solid var(--blue)}.card.error{border-color:#f0c4c4}.head{display:flex;justify-content:space-between;gap:10px;align-items:center}.provider{font-size:27px;font-weight:900}.tag{font-size:10px;font-weight:900;border-radius:999px;padding:6px 9px;background:#eaf2ff;color:#1746b6}.tag.live{background:#effbf7;color:var(--green);border:1px solid #b8d9cd}.recipient{margin:16px 0;background:#edf5ff;border-radius:14px;padding:15px}.recipient small{color:var(--muted)}.amount{font-size:34px;font-weight:900;color:#153f8f;overflow-wrap:anywhere}.bestline{font-size:12px;font-weight:800;color:var(--green);margin-top:5px}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:#f5f7fa;border-radius:11px;padding:11px}.metric small{color:var(--muted)}.metric b{display:block;margin-top:3px}.note{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.4}.errorText{color:#a33;font-weight:700;white-space:pre-wrap;overflow-wrap:anywhere}.foot{margin-top:18px;padding:14px 16px;border-radius:14px;background:#fff9ef;color:#6f4b10;font-size:12px;line-height:1.5}
+@media(max-width:760px){.form,.grid{grid-template-columns:1fr}.btn{width:100%}.summary{align-items:flex-start;flex-direction:column}.hero{padding:20px}.provider{font-size:25px}.amount{font-size:31px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div class="brand">PAYBRIDGE</div><div class="pill">Sandbox comparison</div></div>
+  <section class="hero">
+    <h1>Compare international payment routes.</h1>
+    <p>Wise and Airwallex quotes side by side — recipient amount, rate and fees where the provider returns them.</p>
+    <form id="form" class="form">
+      <div class="field"><label>YOU SEND</label><input id="amount" class="control" type="number" min="1" step="0.01" value="25000" /></div>
+      <div class="field"><label>SOURCE CURRENCY</label><select id="source" class="control"><option>EUR</option><option>GBP</option><option>USD</option><option>AED</option><option>SGD</option><option>TRY</option></select></div>
+      <div class="field"><label>RECIPIENT CURRENCY</label><select id="target" class="control"><option>AED</option><option>GBP</option><option>USD</option><option>EUR</option><option>SGD</option><option>TRY</option></select></div>
+      <button id="compare" class="btn" type="submit">COMPARE</button>
+    </form>
+    <div id="status" class="status">Ready.</div>
+  </section>
+
+  <section id="results" class="results" hidden>
+    <div class="summary"><h2>Best routes for this payment</h2><div id="route" class="route"></div></div>
+    <div id="cards" class="grid"></div>
+    <div class="foot">Sandbox only. No real money is moved. Wise may return an explicit fee. Airwallex FX Quote returns the quoted rate and amounts; a separate fee may not be exposed in this quote response, so PAYBRIDGE does not invent one.</div>
+  </section>
+</div>
+<script>
+const API='https://paybridge-analytics.npzspp.workers.dev';
+const form=document.getElementById('form'),amountEl=document.getElementById('amount'),sourceEl=document.getElementById('source'),targetEl=document.getElementById('target'),btn=document.getElementById('compare'),statusEl=document.getElementById('status'),results=document.getElementById('results'),cards=document.getElementById('cards'),route=document.getElementById('route');
+function money(v,c){return Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' '+c}
+function rate(v){return Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{maximumFractionDigits:8}):'—'}
+async function quote(provider,source,target,amount){
+  const r=await fetch(`${API}/${provider}/quote`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sourceCurrency:source,targetCurrency:target,sourceAmount:amount})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||!data.ok) throw new Error(data.error+(data.upstreamStatus?' ('+data.upstreamStatus+')':'')+(data.details?'\n'+JSON.stringify(data.details):''));
+  return data;
+}
+function renderCard(name,data,isBest,error){
+  if(error){return `<article class="card error"><div class="head"><div class="provider">${name}</div><span class="tag">ERROR</span></div><p class="errorText">${String(error.message||error)}</p><div class="note">The other provider can still be compared independently.</div></article>`}
+  const fee=data.fee===null||data.fee===undefined?(data.feeIncludedInRate?'Included in FX rate / not separately returned':'Not returned'):money(data.fee,data.sourceCurrency);
+  const expiry=data.expirationTime||data.validTo||data.rateExpirationTime||null;
+  return `<article class="card ${isBest?'best':''}"><div class="head"><div class="provider">${name}</div><span class="tag live">LIVE SANDBOX</span></div><div class="recipient"><small>Recipient gets</small><div class="amount">${money(data.targetAmount,data.targetCurrency)}</div>${isBest?'<div class="bestline">Best recipient amount</div>':''}</div><div class="metrics"><div class="metric"><small>Rate</small><b>${rate(data.rate)}</b></div><div class="metric"><small>Fee</small><b>${fee}</b></div></div><div class="note">Quote ID: ${data.quoteId||'—'}${expiry?'<br>Valid until: '+expiry:''}${data.formattedEstimatedDelivery?'<br>Delivery: '+data.formattedEstimatedDelivery:''}</div></article>`;
+}
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const amount=Number(amountEl.value),source=sourceEl.value,target=targetEl.value;
+  if(!amount||amount<=0||source===target){statusEl.textContent=source===target?'Choose two different currencies.':'Enter a valid amount.';return}
+  btn.disabled=true;btn.textContent='LOADING…';statusEl.textContent='Requesting Wise and Airwallex Sandbox quotes…';results.hidden=false;cards.innerHTML='';route.textContent=`${money(amount,source)} → ${target}`;
+  const [wiseRes,airRes]=await Promise.allSettled([quote('wise',source,target,amount),quote('airwallex',source,target,amount)]);
+  const rows=[];
+  if(wiseRes.status==='fulfilled') rows.push({name:'Wise',data:wiseRes.value});
+  if(airRes.status==='fulfilled') rows.push({name:'Airwallex',data:airRes.value});
+  const best=rows.filter(r=>Number.isFinite(Number(r.data.targetAmount))).sort((a,b)=>Number(b.data.targetAmount)-Number(a.data.targetAmount))[0]?.name;
+  cards.innerHTML=renderCard('Wise',wiseRes.status==='fulfilled'?wiseRes.value:null,best==='Wise',wiseRes.status==='rejected'?wiseRes.reason:null)+renderCard('Airwallex',airRes.status==='fulfilled'?airRes.value:null,best==='Airwallex',airRes.status==='rejected'?airRes.reason:null);
+  const okCount=rows.length;statusEl.textContent=okCount===2?'Both Sandbox providers responded successfully.':okCount===1?'One provider responded; see the other card for the error.':'Both provider requests failed.';
+  try{fetch(`${API}/event`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'comparison',route:`${source} -> ${target}`,provider:'Wise + Airwallex',amount,currency:source})})}catch(_){ }
+  btn.disabled=false;btn.textContent='COMPARE';
+});
+</script>
+</body>
+</html>
