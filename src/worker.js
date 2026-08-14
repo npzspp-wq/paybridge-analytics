@@ -96,6 +96,56 @@ function wiseFeeAmount(option) {
   return null;
 }
 
+async function createWiseQuote(env, sourceCurrency, targetCurrency, sourceAmount) {
+  const profile = await getWiseBusinessProfile(env);
+  if (!profile?.id) {
+    const error = new Error("WISE_PROFILE_NOT_FOUND");
+    error.status = 502;
+    throw error;
+  }
+
+  const response = await wiseFetch(env, `/v3/profiles/${profile.id}/quotes`, {
+    method: "POST",
+    body: JSON.stringify({
+      sourceCurrency,
+      targetCurrency,
+      sourceAmount,
+      targetAmount: null,
+      targetAccount: null
+    })
+  });
+
+  const quote = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error("WISE_QUOTE_FAILED");
+    error.status = response.status;
+    error.details = quote?.errors || quote || null;
+    throw error;
+  }
+
+  const option = selectWisePaymentOption(quote);
+  return {
+    ok: true,
+    provider: "wise",
+    environment: "sandbox",
+    quoteId: quote.id || null,
+    sourceCurrency: quote.sourceCurrency || sourceCurrency,
+    targetCurrency: quote.targetCurrency || targetCurrency,
+    sourceAmount: quote.sourceAmount ?? sourceAmount,
+    targetAmount: option?.targetAmount ?? quote.targetAmount ?? null,
+    rate: quote.rate ?? null,
+    fee: wiseFeeAmount(option),
+    feePercentage: option?.feePercentage ?? null,
+    payIn: option?.payIn ?? quote.preferredPayIn ?? null,
+    payOut: option?.payOut ?? quote.payOut ?? null,
+    estimatedDelivery: option?.estimatedDelivery ?? null,
+    formattedEstimatedDelivery: option?.formattedEstimatedDelivery ?? null,
+    rateExpirationTime: quote.rateExpirationTime ?? null,
+    expirationTime: quote.expirationTime ?? null,
+    status: quote.status ?? null
+  };
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -145,6 +195,34 @@ export default {
       }
     }
 
+    if (request.method === "GET" && url.pathname === "/wise/quote-test") {
+      try {
+        const sourceCurrency = cleanText(url.searchParams.get("source") || "EUR", 3).toUpperCase();
+        const targetCurrency = cleanText(url.searchParams.get("target") || "GBP", 3).toUpperCase();
+        const sourceAmount = normalizeAmount(url.searchParams.get("amount") || 1000);
+
+        if (!/^[A-Z]{3}$/.test(sourceCurrency) || !/^[A-Z]{3}$/.test(targetCurrency)) {
+          return json(request, { ok: false, error: "invalid_currency" }, 400);
+        }
+        if (!sourceAmount || sourceAmount <= 0) {
+          return json(request, { ok: false, error: "invalid_amount" }, 400);
+        }
+
+        const result = await createWiseQuote(env, sourceCurrency, targetCurrency, sourceAmount);
+        return json(request, result);
+      } catch (error) {
+        console.error("WISE_QUOTE_TEST_FAILED", error);
+        return json(request, {
+          ok: false,
+          provider: "wise",
+          environment: "sandbox",
+          error: error.message || "wise_quote_test_failed",
+          upstreamStatus: error.status || null,
+          details: error.details || null
+        }, error.status && error.status >= 400 && error.status < 600 ? error.status : 502);
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/wise/quote") {
       try {
         const body = await request.json();
@@ -159,63 +237,17 @@ export default {
           return json(request, { ok: false, error: "invalid_amount" }, 400);
         }
 
-        const profile = await getWiseBusinessProfile(env);
-        if (!profile?.id) {
-          return json(request, { ok: false, error: "wise_profile_not_found" }, 502);
-        }
-
-        const response = await wiseFetch(env, `/v3/profiles/${profile.id}/quotes`, {
-          method: "POST",
-          body: JSON.stringify({
-            sourceCurrency,
-            targetCurrency,
-            sourceAmount,
-            targetAmount: null,
-            targetAccount: null
-          })
-        });
-
-        const quote = await response.json().catch(() => null);
-        if (!response.ok) {
-          console.error("WISE_QUOTE_UPSTREAM_FAILED", response.status, quote);
-          return json(request, {
-            ok: false,
-            provider: "wise",
-            error: "wise_quote_failed",
-            upstreamStatus: response.status,
-            details: quote?.errors || quote || null
-          }, response.status >= 400 && response.status < 500 ? response.status : 502);
-        }
-
-        const option = selectWisePaymentOption(quote);
-        return json(request, {
-          ok: true,
-          provider: "wise",
-          environment: "sandbox",
-          quoteId: quote.id || null,
-          sourceCurrency: quote.sourceCurrency || sourceCurrency,
-          targetCurrency: quote.targetCurrency || targetCurrency,
-          sourceAmount: quote.sourceAmount ?? sourceAmount,
-          targetAmount: option?.targetAmount ?? quote.targetAmount ?? null,
-          rate: quote.rate ?? null,
-          fee: wiseFeeAmount(option),
-          feePercentage: option?.feePercentage ?? null,
-          payIn: option?.payIn ?? quote.preferredPayIn ?? null,
-          payOut: option?.payOut ?? quote.payOut ?? null,
-          estimatedDelivery: option?.estimatedDelivery ?? null,
-          formattedEstimatedDelivery: option?.formattedEstimatedDelivery ?? null,
-          rateExpirationTime: quote.rateExpirationTime ?? null,
-          expirationTime: quote.expirationTime ?? null,
-          status: quote.status ?? null
-        });
+        const result = await createWiseQuote(env, sourceCurrency, targetCurrency, sourceAmount);
+        return json(request, result);
       } catch (error) {
         console.error("WISE_QUOTE_FAILED", error);
         return json(request, {
           ok: false,
           provider: "wise",
           error: error.message || "wise_quote_failed",
-          upstreamStatus: error.status || null
-        }, error.status || 502);
+          upstreamStatus: error.status || null,
+          details: error.details || null
+        }, error.status && error.status >= 400 && error.status < 600 ? error.status : 502);
       }
     }
 
