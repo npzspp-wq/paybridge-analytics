@@ -30,6 +30,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Enable multilingual interface
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          marker = '<script src="/i18n.js"></script>'
+          if marker not in s:
+              s = s.replace('</body>', marker + '\n</body>')
+          p.write_text(s, encoding='utf-8')
+          PY
+
       - name: Normalize Cloudflare token
         id: cf_token
         shell: bash
